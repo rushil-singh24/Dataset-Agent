@@ -1,11 +1,4 @@
-"""
-safe_exec.py  –  sandboxed execution of LLM-generated pandas code
-
-Changes from v1:
-- execute_analysis() now returns a richer ExecutionError on failure so the
-  retry loop in main.py can pass a useful message back to the LLM.
-- All other behaviour (AST validation, forbidden names, timeout) is unchanged.
-"""
+"""Sandboxed execution of LLM-generated pandas code."""
 
 from __future__ import annotations
 
@@ -23,18 +16,16 @@ from .store import ARTIFACT_DIR, DATA_DIR
 
 os.environ.setdefault("MPLCONFIGDIR", str(DATA_DIR / "mplconfig"))
 
-import duckdb
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from matplotlib.figure import Figure
 
 from .schemas import ChartResult, TableResult
 
-
-# ---------------------------------------------------------------------------
-# Forbidden identifiers
-# ---------------------------------------------------------------------------
+EXECUTION_TIMEOUT_SECONDS = 15
+_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 
 FORBIDDEN_NAMES = {
     "__import__",
@@ -53,6 +44,13 @@ FORBIDDEN_NAMES = {
     "help",
     "exit",
     "quit",
+    "memoryview",
+    "classmethod",
+    "staticmethod",
+    "property",
+    "super",
+    "type",
+    "object",
 }
 
 FORBIDDEN_ATTRS = {
@@ -71,60 +69,61 @@ FORBIDDEN_ATTRS = {
     "rmdir",
     "mkdir",
     "write",
+    "dump",
+    "dumps",
+    "load",
+    "loads",
+}
+
+FORBIDDEN_DUNDER_ATTRS = {
+    "__class__",
+    "__bases__",
+    "__base__",
+    "__mro__",
+    "__subclasses__",
+    "__globals__",
+    "__code__",
+    "__closure__",
+    "__func__",
+    "__self__",
+    "__dict__",
+    "__getattribute__",
+    "__getattr__",
+    "__setattr__",
+    "__delattr__",
+    "__init__",
+    "__new__",
+    "__reduce__",
+    "__reduce_ex__",
 }
 
 
 class SafetyError(ValueError):
-    """Raised when generated code fails the static safety check."""
+    """Raised when generated code fails static safety checks."""
 
-
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
 
 def execute_analysis(
     code: str,
     df: pd.DataFrame,
     chart_type: str = "none",
 ) -> tuple[Any, list[TableResult], list[ChartResult]]:
-    """
-    Validate `code` statically then execute it in a sandboxed environment.
-
-    Returns (raw_result, tables, charts).
-    Raises SafetyError  – static validation failed (bad syntax, forbidden names, etc.)
-    Raises RuntimeError – code ran but raised an exception at runtime.
-                          The message includes the original exception for the LLM retry.
-    Raises TimeoutError equivalent wrapped in RuntimeError – execution timed out.
-    """
     validate_code(code, [str(col) for col in df.columns])
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_execute, code, df.copy(), chart_type)
-        try:
-            return future.result(timeout=15)
-        except TimeoutError as exc:
-            raise RuntimeError(
-                "Code execution timed out after 15 seconds. "
-                "Try a simpler or more targeted query."
-            ) from exc
-        except SafetyError:
-            raise
-        except Exception as exc:
-            # Wrap with a descriptive message for the LLM retry
-            raise RuntimeError(
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
+    future = _EXECUTOR.submit(_execute, code, df.copy(), chart_type)
+    try:
+        return future.result(timeout=EXECUTION_TIMEOUT_SECONDS)
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"Code execution timed out after {EXECUTION_TIMEOUT_SECONDS} seconds. "
+            "Try a simpler or more targeted query."
+        ) from exc
+    except SafetyError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
 
-
-# ---------------------------------------------------------------------------
-# AST validator
-# ---------------------------------------------------------------------------
 
 def validate_code(code: str, columns: list[str]) -> None:
-    """
-    Static safety check.  Raises SafetyError if the code uses forbidden
-    constructs or references columns that don't exist in the dataframe.
-    """
     try:
         tree = ast.parse(code, mode="exec")
     except SyntaxError as exc:
@@ -141,45 +140,41 @@ def validate_code(code: str, columns: list[str]) -> None:
                 ast.With,
                 ast.AsyncWith,
                 ast.Lambda,
+                ast.ClassDef,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.Try,
+                ast.Raise,
             ),
         ):
             raise SafetyError(f"Forbidden syntax node: {type(node).__name__}")
 
         if isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
-            raise SafetyError(f"Forbidden built-in: {node.id!r}")
+            raise SafetyError(f"Forbidden built-in or name: {node.id!r}")
 
         if isinstance(node, ast.Attribute):
-            if node.attr.startswith("__") or node.attr in FORBIDDEN_ATTRS:
+            if node.attr.startswith("__") or node.attr in FORBIDDEN_ATTRS or node.attr in FORBIDDEN_DUNDER_ATTRS:
                 raise SafetyError(f"Forbidden attribute: {node.attr!r}")
 
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             if "__" in node.value:
                 raise SafetyError("Dunder strings are not permitted in generated code.")
 
-    # Check that any literal column subscripts actually exist
     referenced = _find_literal_column_references(tree)
     missing = sorted(referenced - set(columns))
     if missing:
         raise SafetyError(
-            f"Generated code references columns that don't exist in the dataset: "
-            f"{', '.join(missing)}.  Available columns: {', '.join(columns[:20])}"
+            "Generated code references columns that do not exist in the dataset: "
+            f"{', '.join(missing)}. Available columns: {', '.join(columns[:20])}"
         )
 
 
 def _find_literal_column_references(tree: ast.AST) -> set[str]:
     refs: set[str] = set()
     for node in ast.walk(tree):
-        # df['col']
-        if (
-            isinstance(node, ast.Subscript)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "df"
-        ):
-            if isinstance(node.slice, ast.Constant) and isinstance(
-                node.slice.value, str
-            ):
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "df":
+            if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
                 refs.add(node.slice.value)
-            # df[['col1', 'col2']]
             if isinstance(node.slice, ast.List):
                 for elt in node.slice.elts:
                     if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
@@ -187,20 +182,12 @@ def _find_literal_column_references(tree: ast.AST) -> set[str]:
     return refs
 
 
-# ---------------------------------------------------------------------------
-# Execution sandbox
-# ---------------------------------------------------------------------------
-
-def _execute(
-    code: str, df: pd.DataFrame, chart_type: str
-) -> tuple[Any, list[TableResult], list[ChartResult]]:
+def _execute(code: str, df: pd.DataFrame, chart_type: str) -> tuple[Any, list[TableResult], list[ChartResult]]:
     exec_env: dict[str, Any] = {
         "df": df,
         "pd": pd,
         "np": np,
-        "duckdb": duckdb,
         "__builtins__": {
-            "__import__": __import__,
             "all": all,
             "any": any,
             "bool": bool,
@@ -222,6 +209,7 @@ def _execute(
             "sum": sum,
             "tuple": tuple,
             "zip": zip,
+            "abs": abs,
         },
     }
 
@@ -233,20 +221,13 @@ def _execute(
     return _json_ready(result), tables, charts
 
 
-# ---------------------------------------------------------------------------
-# Table builder
-# ---------------------------------------------------------------------------
-
 def _to_table(result: Any) -> TableResult:
     if isinstance(result, pd.Series):
         frame = result.reset_index()
     elif isinstance(result, pd.DataFrame):
         frame = result
     elif isinstance(result, dict):
-        # Flatten nested dicts/lists so they display cleanly
-        frame = pd.DataFrame(
-            [{k: _table_cell(v) for k, v in result.items()}]
-        )
+        frame = pd.DataFrame([{k: _table_cell(v) for k, v in result.items()}])
     elif isinstance(result, list) and result and isinstance(result[0], dict):
         frame = pd.DataFrame(result)
     else:
@@ -266,10 +247,6 @@ def _table_cell(value: Any) -> Any:
     return value
 
 
-# ---------------------------------------------------------------------------
-# Chart builder  (unchanged logic, just cleaner structure)
-# ---------------------------------------------------------------------------
-
 def _create_chart(result: Any, chart_type: str) -> list[ChartResult]:
     if result is None:
         return []
@@ -282,46 +259,48 @@ def _create_chart(result: Any, chart_type: str) -> list[ChartResult]:
     artifact_id = f"{uuid4().hex}.png"
     path = ARTIFACT_DIR / artifact_id
 
-    fig, ax = plt.subplots(figsize=(9, 5), constrained_layout=True)
+    fig = Figure(figsize=(9, 5), constrained_layout=True)
+    FigureCanvas(fig)
+    ax = fig.add_subplot(111)
+
     cols = list(frame.columns)
     numeric = list(frame.select_dtypes(include="number").columns)
 
-    try:
-        if chart_type == "histogram" and numeric:
-            frame[numeric[0]].plot(kind="hist", ax=ax, bins=30)
-            ax.set_xlabel(str(numeric[0]))
+    if chart_type == "histogram" and numeric:
+        ax.hist(frame[numeric[0]].dropna(), bins=30)
+        ax.set_xlabel(str(numeric[0]))
 
-        elif chart_type == "scatter" and len(numeric) >= 2:
-            ax.scatter(frame[numeric[0]], frame[numeric[1]])
-            ax.set_xlabel(str(numeric[0]))
-            ax.set_ylabel(str(numeric[1]))
+    elif chart_type == "scatter" and len(numeric) >= 2:
+        clean = frame[[numeric[0], numeric[1]]].dropna()
+        ax.scatter(clean[numeric[0]], clean[numeric[1]])
+        ax.set_xlabel(str(numeric[0]))
+        ax.set_ylabel(str(numeric[1]))
 
-        elif chart_type == "heatmap" and len(numeric) >= 2:
-            corr = frame[numeric].corr(numeric_only=True)
-            img = ax.imshow(corr, cmap="viridis")
-            ax.set_xticks(range(len(corr.columns)), corr.columns, rotation=45, ha="right")
-            ax.set_yticks(range(len(corr.index)), corr.index)
-            fig.colorbar(img, ax=ax)
+    elif chart_type == "heatmap" and len(numeric) >= 2:
+        corr = frame[numeric].corr(numeric_only=True)
+        img = ax.imshow(corr)
+        ax.set_xticks(range(len(corr.columns)), corr.columns, rotation=45, ha="right")
+        ax.set_yticks(range(len(corr.index)), corr.index)
+        fig.colorbar(img, ax=ax)
 
-        elif numeric:
-            x_col = cols[0]
-            y_col = numeric[-1]
-            if chart_type == "line":
-                ax.plot(frame[x_col].astype(str), frame[y_col])
-            else:
-                ax.bar(frame[x_col].astype(str), frame[y_col])
-            ax.set_xlabel(str(x_col))
-            ax.set_ylabel(str(y_col))
-            ax.tick_params(axis="x", labelrotation=35)
-
+    elif numeric:
+        x_col = cols[0]
+        y_col = numeric[-1]
+        x_values = frame[x_col].astype(str)
+        y_values = frame[y_col]
+        if chart_type == "line":
+            ax.plot(x_values, y_values)
         else:
-            plt.close(fig)
-            return []
+            ax.bar(x_values, y_values)
+        ax.set_xlabel(str(x_col))
+        ax.set_ylabel(str(y_col))
+        ax.tick_params(axis="x", labelrotation=35)
 
-        ax.set_title("Generated Visualization")
-        fig.savefig(path, dpi=140)
-    finally:
-        plt.close(fig)
+    else:
+        return []
+
+    ax.set_title("Generated Visualization")
+    fig.savefig(path, dpi=140)
 
     return [
         ChartResult(
@@ -333,15 +312,13 @@ def _create_chart(result: Any, chart_type: str) -> list[ChartResult]:
     ]
 
 
-# ---------------------------------------------------------------------------
-# JSON serialisation helper
-# ---------------------------------------------------------------------------
-
 def _json_ready(value: Any) -> Any:
     if isinstance(value, pd.DataFrame):
         return value.head(50).where(pd.notna(value), None).to_dict(orient="records")
     if isinstance(value, pd.Series):
         return value.head(50).where(pd.notna(value), None).to_dict()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
     if hasattr(value, "item"):
         return value.item()
     return value

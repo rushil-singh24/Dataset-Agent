@@ -5,7 +5,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-
 Classification = Literal[
     "Dataset Information",
     "Statistical Analysis",
@@ -91,7 +90,7 @@ class ExecutionResult(BaseModel):
 class ChatRequest(BaseModel):
     dataset_id: str
     message: str
-    session_id: str = "default"
+    session_id: str = Field(min_length=1)
     educational_mode: bool = False
 
 

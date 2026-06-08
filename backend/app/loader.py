@@ -5,7 +5,6 @@ from zipfile import ZipFile
 
 import pandas as pd
 
-
 SUPPORTED_EXTENSIONS = {
     ".csv",
     ".tsv",
@@ -77,6 +76,8 @@ def _read_json(path: Path) -> pd.DataFrame:
 def _load_zip(path: Path) -> tuple[pd.DataFrame, str]:
     extract_dir = path.with_suffix("")
     extract_dir.mkdir(parents=True, exist_ok=True)
+    extract_root = extract_dir.resolve()
+
     with ZipFile(path) as archive:
         candidates = [
             member
@@ -88,6 +89,12 @@ def _load_zip(path: Path) -> tuple[pd.DataFrame, str]:
         if len(candidates) > 1:
             names = ", ".join(candidates[:8])
             raise ValueError(f"ZIP contains multiple supported files. Upload one file at a time for MVP: {names}")
-        archive.extract(candidates[0], extract_dir)
-    selected = extract_dir / candidates[0]
-    return _load_supported_file(selected)
+
+        selected_member = candidates[0]
+        target_path = (extract_dir / selected_member).resolve()
+        if not target_path.is_relative_to(extract_root):
+            raise ValueError("ZIP contains an unsafe file path.")
+
+        archive.extract(selected_member, extract_dir)
+
+    return _load_supported_file(target_path)

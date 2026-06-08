@@ -57,6 +57,17 @@ export type ChatResponse = {
   };
 };
 
+async function readError(response: Response, fallback: string) {
+  try {
+    const payload = await response.json();
+    if (typeof payload?.detail === "string") return payload.detail;
+  } catch {
+    // response was not JSON
+  }
+  const text = await response.text().catch(() => "");
+  return text || fallback;
+}
+
 export async function uploadDataset(file: File): Promise<DatasetProfile> {
   const form = new FormData();
   form.append("file", file);
@@ -65,8 +76,15 @@ export async function uploadDataset(file: File): Promise<DatasetProfile> {
     body: form
   });
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || "Upload failed");
+    throw new Error(await readError(response, "Upload failed"));
+  }
+  return response.json();
+}
+
+export async function getDataset(datasetId: string): Promise<DatasetProfile> {
+  const response = await fetch(`${API_BASE_URL}/api/datasets/${datasetId}`);
+  if (!response.ok) {
+    throw new Error(await readError(response, "Dataset not loaded"));
   }
   return response.json();
 }
@@ -78,8 +96,16 @@ export async function sendChat(datasetId: string, message: string, sessionId: st
     body: JSON.stringify({ dataset_id: datasetId, message, session_id: sessionId, educational_mode: educationalMode })
   });
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || "Chat request failed");
+    throw new Error(await readError(response, "Chat request failed"));
   }
   return response.json() as Promise<ChatResponse>;
+}
+
+export async function clearSession(sessionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/clear`, {
+    method: "DELETE"
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response, "Session clear failed"));
+  }
 }

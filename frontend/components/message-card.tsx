@@ -11,7 +11,7 @@ export type ChatMessage =
   | { id: string; role: "user"; content: string }
   | { id: string; role: "assistant"; content: string; response: ChatResponse };
 
-export function MessageCard({ message, showAnalysis }: { message: ChatMessage; showAnalysis: boolean }) {
+export function MessageCard({ message, showAnalysis, readOnly }: { message: ChatMessage; showAnalysis: boolean; readOnly?: boolean }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
@@ -22,6 +22,11 @@ export function MessageCard({ message, showAnalysis }: { message: ChatMessage; s
 
   return (
     <div className="max-w-4xl space-y-3">
+      {readOnly ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          Viewing saved history. Dataset no longer loaded — upload it again to continue asking questions.
+        </div>
+      ) : null}
       {showAnalysis ? <PlanPanel response={message.response} /> : null}
       <Results response={message.response} showAnalysis={showAnalysis} />
       <div className="rounded-md border border-border bg-panel p-4 shadow-soft">
@@ -43,11 +48,7 @@ function PlanPanel({ response }: { response: ChatResponse }) {
   const [open, setOpen] = useState(true);
   return (
     <section className="rounded-md border border-border bg-panel shadow-soft">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-      >
+      <button type="button" onClick={() => setOpen((value) => !value)} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left">
         <span>
           <span className="block text-sm font-semibold">Analysis Plan</span>
           <span className="block text-xs text-muted">{response.classification}</span>
@@ -92,8 +93,8 @@ function StatusList({ steps }: { steps: Array<{ label: string; state: string }> 
     <div className="rounded-md bg-stone-50 p-3">
       <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Execution</div>
       <div className="space-y-2">
-        {steps.map((step) => (
-          <div key={`${step.label}-${step.state}`} className="flex items-center gap-2 text-xs">
+        {steps.map((step, index) => (
+          <div key={`${step.label}-${step.state}-${index}`} className="flex items-center gap-2 text-xs">
             {step.state === "complete" ? <CheckCircle2 className="h-4 w-4 text-accent" /> : null}
             {step.state === "running" ? <Loader2 className="h-4 w-4 animate-spin text-slate-700" /> : null}
             {step.state === "blocked" ? <XCircle className="h-4 w-4 text-danger" /> : null}
@@ -114,14 +115,7 @@ function Results({ response, showAnalysis }: { response: ChatResponse; showAnaly
       {response.execution.charts.map((chart) => (
         <div key={chart.artifact_id} className="rounded-md border border-border bg-panel p-4 shadow-soft">
           <div className="mb-3 text-sm font-semibold">{chart.title}</div>
-          <Image
-            className="h-auto w-full rounded-md border border-border"
-            alt={chart.title}
-            src={`${API_BASE_URL}${chart.url}`}
-            width={1200}
-            height={700}
-            unoptimized
-          />
+          <Image className="h-auto w-full rounded-md border border-border" alt={chart.title} src={`${API_BASE_URL}${chart.url}`} width={1200} height={700} unoptimized />
         </div>
       ))}
 
