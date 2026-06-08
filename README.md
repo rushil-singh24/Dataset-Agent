@@ -20,17 +20,24 @@ The backend loads the full uploaded dataset into a dataframe and generated Panda
 
 ## Local Setup
 
-Backend:
+### From the repository root
+
+```bash
+npm run backend
+npm run dev
+```
+
+### Backend setup
 
 ```bash
 cd backend
 python3 -m venv .venv
-. .venv/bin/activate
+source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Frontend:
+### Frontend setup
 
 ```bash
 cd frontend
@@ -38,7 +45,13 @@ npm install
 npm run dev
 ```
 
-Ollama:
+If you prefer to install frontend dependencies from the repo root:
+
+```bash
+npm --prefix frontend install
+```
+
+### Ollama
 
 ```bash
 ollama pull qwen3:8b
