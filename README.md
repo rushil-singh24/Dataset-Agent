@@ -74,3 +74,7 @@ Frontend environment variables:
 ## Notes
 
 This MVP supports one active dataset per session. Multi-dataset comparison, predictive modeling, dashboards, scheduled reports, and natural-language SQL mode are planned Phase 2 capabilities.
+
+#Example Screenshot
+<img width="1512" height="831" alt="Screenshot 2026-06-08 at 6 20 21 PM" src="https://github.com/user-attachments/assets/551b9f80-4b1f-4d07-bd4a-4bfc969ef75a" />
+
