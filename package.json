@@ -1,0 +1,10 @@
+{
+  "name": "datachat-ai",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "backend": "cd backend && uvicorn app.main:app --reload --host 127.0.0.1 --port 8000",
+    "test:backend": "cd backend && pytest",
+    "lint:frontend": "npm --prefix frontend run lint"
+  }
+}

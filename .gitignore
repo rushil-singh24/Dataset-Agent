@@ -1,0 +1,14 @@
+backend/data/uploads/*
+backend/data/artifacts/*
+backend/data/mplconfig/*
+!backend/data/uploads/.gitkeep
+!backend/data/artifacts/.gitkeep
+backend/.venv/
+__pycache__/
+*.py[cod]
+backend/.pytest_cache/
+frontend/.next/
+frontend/node_modules/
+frontend/out/
+.env
+.DS_Store
