@@ -12,3 +12,7 @@ frontend/node_modules/
 frontend/out/
 .env
 .DS_Store
+
+# committed by mistake earlier
+backend/venv/
+venv/
